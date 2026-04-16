@@ -75,9 +75,6 @@ Once the build completes, the following files will extract to your project root:
 * **Docker "Not Applicable" Flags:** The Docker OpenSCAP reports will return hundreds of notapplicable rules. OpenSCAP is scanning for OS-level parameters (kernel modules, bootloaders, disk partitions) that physically do not exist inside a container's shared-kernel architecture.  
 * **Identical Vagrant Scores:** The baseline and post-hardening scores for the Vagrant VM will be identical if the playbook only contains the SSH root login restriction. The bento base box disables this by default, meaning Ansible reports changed=0 and the OS state remains exactly the same between Step 1 and Step 3\.
 
-### **Are you sure?**
-
-Are you sure the OpenSCAP scanner is functioning correctly if it returns hundreds of notapplicable results for Docker instead of standard failures? Yes. The OpenSCAP scanner (oscap) natively detects container virtualization contexts. It is explicitly programmed to bypass rules labeled with the machine or os context when executing inside a container, preventing the generation of false-positive failures for subsystems it cannot access.
 
 ## **Cleanup & Maintenance**
 
@@ -89,8 +86,3 @@ To perform a complete wipe of the Docker cache (Note: this forces a re-download 
 
 docker system prune \-a \-f
 
-## **References & Credible Sources**
-
-* **Red Hat Documentation (Journals/Technicals):** [Vulnerability scanning of containers with OpenSCAP](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_atomic_host/7/html/managing_containers/vulnerability_scanning_with_openscap)  
-* **StackOverflow (Coding/Technicals):** [Ansible 'ok' vs 'changed' status](https://stackoverflow.com/questions/44122143/ansible-ok-vs-changed-status)  
-* **Center for Internet Security (Journals):** [CIS Docker Benchmark](https://www.cisecurity.org/benchmark/docker)
