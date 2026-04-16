@@ -57,7 +57,7 @@ packer build base.pkr.hcl
 
 Run the main testing pipeline. This command uses the \-force flag to automatically overwrite previous test artifacts, enabling continuous iteration.
 ```
-packer build \-force build.pkr.hcl
+packer build -force build.pkr.hcl
 ```
 *Execution Flow:* VirtualBox will briefly open a monitor window, Docker will spin up in the background, and Ansible will execute the 3-step flowchart. The entire run will complete in 2-4 minutes.
 
@@ -80,9 +80,9 @@ Once the build completes, the following files will extract to your project root:
 
 Rapidly building containers will bloat your host drive with dangling (overwritten) images. Run this command frequently to wipe out ghost images from previous test runs:
 ```
-docker image prune \-f
+docker image prune -f
 ```
 To perform a complete wipe of the Docker cache (Note: this forces a re-download of the base ubuntu:22.04 image on the next run):
 ```
-docker system prune \-a \-f
+docker system prune -a -f
 ```
