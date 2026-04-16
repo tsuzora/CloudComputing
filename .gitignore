@@ -1,0 +1,9 @@
+*.box
+output-*/
+.vagrant/
+packer_cache/
+.packer.d/
+crash.log
+*.tmp
+.DS_Store
+*_Reports/

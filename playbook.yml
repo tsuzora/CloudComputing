@@ -1,0 +1,142 @@
+---
+- name: Research Workflow - Automated Hardening and Scanning
+  hosts: all
+  become: yes
+  vars:
+    # Point directly to the downloaded guide
+    scap_profile: "/opt/scap-security-guide-0.1.79/ssg-ubuntu2204-ds.xml"
+    report_dir: "/opt/security_reports"
+
+  tasks:
+    # ==========================================
+    # PREPARATION
+    # ==========================================
+    - name: Create directory for OpenSCAP reports
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+
+    # ==========================================
+    # STEP 1: BASELINE SCAN (From Flowchart)
+    # ==========================================
+    - name: STEP 1 - Run OpenSCAP Baseline Scan
+      command: >
+        oscap xccdf eval 
+        --profile xccdf_org.ssgproject.content_profile_standard 
+        --report {{ report_dir }}/baseline_report.html 
+        {{ scap_profile }}
+      # We ignore failures here because the baseline WILL fail the security checks
+      failed_when: false
+      register: baseline_scan
+
+    - name: Log Baseline Scan Completion
+      debug:
+        msg: "Baseline scan complete. Report saved to {{ report_dir }}/baseline_report.html"
+
+    # ==========================================
+    # STEP 2: ANSIBLE HARDENING (From Flowchart)
+    # ==========================================
+    - name: STEP 2A - Lock down permissions on /etc/shadow (Universal)
+      file:
+        path: /etc/shadow
+        owner: root
+        group: root
+        mode: '0000'
+
+    - name: STEP 2B - Ensure password complexity package is installed (Universal)
+      apt:
+        name: libpam-pwquality
+        state: present
+
+    - name: STEP 2C - Create non-root application user (Docker Only)
+      user:
+        name: secureapp
+        state: present
+        shell: /bin/bash
+      when: ansible_virtualization_type == 'docker' or ansible_virtualization_type == 'containerd'
+
+    - name: STEP 2D - Restrict sudoers to require password (VM Only)
+      lineinfile:
+        path: /etc/sudoers
+        state: absent
+        regexp: '^%sudo.*NOPASSWD:.*'
+      when: ansible_virtualization_type == 'virtualbox'
+
+    - name: STEP 2E - Disable SSH root login (VM Only)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+      when: ansible_virtualization_type == 'virtualbox'
+
+    - name: Gather the package facts
+      package_facts:
+      manager: auto
+      tags:
+      - NIST-800-53-AU-8(1)(a)
+      - NIST-800-53-CM-6(a)
+      - PCI-DSS-Req-10.4
+      - PCI-DSSv4-10.6
+      - PCI-DSSv4-10.6.1
+      - enable_strategy
+      - high_severity
+      - low_complexity
+      - low_disruption
+      - no_reboot_needed
+      - service_timesyncd_enabled
+      
+    - name: XCCDF Value var_timesync_service # promote to variable
+      set_fact:
+        var_timesync_service: !!str systemd-timesyncd
+      tags:
+        - always
+    
+    - name: Enable service systemd-timesyncd
+      block:
+    
+      - name: Gather the package facts
+        ansible.builtin.package_facts:
+          manager: auto
+    
+      - name: Enable service systemd-timesyncd
+        ansible.builtin.systemd:
+          name: systemd-timesyncd
+          enabled: 'yes'
+          state: started
+          masked: 'no'
+        when:
+        - '"systemd-timesyncd" in ansible_facts.packages'
+        - var_timesync_service == "systemd-timesyncd"
+        - var_timesync_service == "systemd-timesyncd"
+      when:
+      - '"linux-base" in ansible_facts.packages'
+      - ( not ( "chrony" in ansible_facts.packages ) and not ( "ntp" in ansible_facts.packages
+        ) )
+      tags:
+      - NIST-800-53-AU-8(1)(a)
+      - NIST-800-53-CM-6(a)
+      - PCI-DSS-Req-10.4
+      - PCI-DSSv4-10.6
+      - PCI-DSSv4-10.6.1
+      - enable_strategy
+      - high_severity
+      - low_complexity
+      - low_disruption
+      - no_reboot_needed
+      - service_timesyncd_enabled
+    # ==========================================
+    # STEP 3: POST-HARDENING SCAN (From Flowchart)
+    # ==========================================
+    - name: STEP 3 - Run OpenSCAP Post-Hardening Scan
+      command: >
+        oscap xccdf eval 
+        --profile xccdf_org.ssgproject.content_profile_standard 
+        --report {{ report_dir }}/post_hardening_report.html 
+        {{ scap_profile }}
+      failed_when: false
+      register: post_scan
+
+    - name: Log Post-Hardening Scan Completion
+      debug:
+        msg: "Post-hardening scan complete. Report saved to {{ report_dir }}/post_hardening_report.html"
