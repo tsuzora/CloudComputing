@@ -40,8 +40,8 @@ This pipeline is strictly engineered to run natively on a Windows host to avoid 
 
 Open **Windows PowerShell**, clone this repository to your local machine, and initialize the Packer plugins:
 ```
-git clone \<your-github-repo-url\>  
-cd \<your-repository-folder\>  
+git clone https://github.com/tsuzora/CloudComputing.git
+cd CloudComputing 
 packer init base.pkr.hcl  
 packer init build.pkr.hcl
 ```
