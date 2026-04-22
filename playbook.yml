@@ -1,107 +1,73 @@
 ---
-- name: Research Workflow - Automated Hardening and Scanning
+- name: Docker CIS Hardening Pipeline
   hosts: all
   become: yes
-  vars:
-    # Point directly to the downloaded guide
-    scap_profile: "/opt/scap-security-guide-0.1.79/ssg-ubuntu2204-ds.xml"
-    report_dir: "/opt/security_reports"
-
   tasks:
-    # ==========================================
-    # PREPARATION
-    # ==========================================
-    - name: Create directory for OpenSCAP reports
+    - name: Create security reports directory
       file:
-        path: "{{ report_dir }}"
+        path: /opt/security_reports
         state: directory
-        mode: '0755'
 
-    # ==========================================
-    # STEP 1: BASELINE SCAN (From Flowchart)
-    # ==========================================
-    - name: STEP 1 - Run OpenSCAP Baseline Scan
+    - name: STEP 1 - Run OpenSCAP CIS Baseline Scan
       command: >
         oscap xccdf eval 
-        --profile xccdf_org.ssgproject.content_profile_standard 
-        --report {{ report_dir }}/baseline_report.html 
-        {{ scap_profile }}
-      # We ignore failures here because the baseline WILL fail the security checks
-      failed_when: false
-      register: baseline_scan
+        --profile xccdf_org.ssgproject.content_profile_cis_level1_server 
+        --results /opt/security_reports/baseline-results.xml 
+        --report /opt/security_reports/docker_cis_baseline.html 
+        /opt/scap-security-guide-0.1.79/ssg-ubuntu2204-ds.xml
+      ignore_errors: yes
 
-    - name: Log Baseline Scan Completion
-      debug:
-        msg: "Baseline scan complete. Report saved to {{ report_dir }}/baseline_report.html"
-
-    # ==========================================
-    # STEP 2: ANSIBLE HARDENING (From Flowchart)
-    # ==========================================
-    - name: STEP 2A - Install required security packages (Auditd)
+    # =================================================================
+    # STEP 2: DOCKER HARDENING (Container-Native Remediation)
+    # =================================================================
+    - name: STEP 2A - Remove unnecessary network utilities (CIS compliance)
       apt:
         name: 
-            - auditd
-            - logrotate
+          - wget
+          - curl
+          - netcat
+        state: absent
+
+    - name: STEP 2B - Create a non-root application user
+      user:
+        name: appuser
         state: present
-        when: ansible_virtualization_type == 'virtualbox'
+        shell: /bin/bash
+        
+    - name: Gather the package facts
+      package_facts:
+        manager: auto
+      tags:
+      - DISA-STIG-UBTU-22-215010
+      - enable_strategy
+      - low_complexity
+      - low_disruption
+      - medium_severity
+      - no_reboot_needed
+      - package_pam_pwquality_installed
 
-    - name: STEP 2B - Enable and start critical security services
-      systemd:
-        name: "{{ item.name }}"
-        enabled: "{{ item.enabled }}"
-        state: "{{ item.state }}"
-      loop:
-        - { name: 'auditd', enabled: yes, state: 'started' }
-        - { name: 'systemd-timesyncd', enabled: yes, state: 'started' }
-        - { name: 'apport', enabled: no, state: 'stopped' } # Disables Apport (crash reporting)
-      when: ansible_virtualization_type == 'virtualbox'
-
-    - name: STEP 2C - Apply Kernel Parameters (ASLR & Core Dumps)
-      sysctl:
-        name: "{{ item.name }}"
-        value: "{{ item.value }}"
+    - name: Ensure libpam-pwquality is installed
+      ansible.builtin.package:
+        name: libpam-pwquality
         state: present
-        reload: yes
-      loop:
-        - { name: 'fs.suid_dumpable', value: '0' } # Disables core dumps for SUID programs
-        - { name: 'kernel.randomize_va_space', value: '2' } # Enables full ASLR
-      when: ansible_virtualization_type == 'virtualbox'
+      when: '"libpam-runtime" in ansible_facts.packages'
+      tags:
+      - DISA-STIG-UBTU-22-215010
+      - enable_strategy
+      - low_complexity
+      - low_disruption
+      - medium_severity
+      - no_reboot_needed
+      - package_pam_pwquality_installed
 
-    - name: STEP 2D - Hardening SSH Daemon Configurations
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        state: present
-        validate: /usr/sbin/sshd -t -f %s
-      loop:
-        - { regexp: '(?i)^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
-        - { regexp: '(?i)^#?ClientAliveCountMax', line: 'ClientAliveCountMax 0' }
-        - { regexp: '(?i)^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
-        - { regexp: '(?i)^#?PermitRootLogin', line: 'PermitRootLogin no' }
-      when: ansible_virtualization_type == 'virtualbox'
-      notify: Restart SSH
-
-  # =================================================================
-  # HANDLERS (Runs only if a configuration was changed)
-  # =================================================================
-  handlers:
-    - name: Restart SSH
-      systemd:
-        name: sshd
-        state: restarted
-    # ==========================================
-    # STEP 3: POST-HARDENING SCAN (From Flowchart)
-    # ==========================================
-    - name: STEP 3 - Run OpenSCAP Post-Hardening Scan
+    # =================================================================
+    # STEP 3: POST-HARDENING SCAN
+    # =================================================================
+    - name: STEP 3 - Run OpenSCAP CIS Post-Hardening Scan
       command: >
         oscap xccdf eval 
-        --profile xccdf_org.ssgproject.content_profile_standard 
-        --report {{ report_dir }}/post_hardening_report.html 
-        {{ scap_profile }}
-      failed_when: false
-      register: post_scan
-
-    - name: Log Post-Hardening Scan Completion
-      debug:
-        msg: "Post-hardening scan complete. Report saved to {{ report_dir }}/post_hardening_report.html"
+        --profile xccdf_org.ssgproject.content_profile_cis_level1_server 
+        --results /opt/security_reports/hardened-results.xml 
+        --report /opt/security_reports/docker_cis_hardened.html 
+        /opt/scap-security-guide-0.1.79/ssg-ubuntu2204-ds.xml
+      ignore_errors: yes
