@@ -3,71 +3,405 @@
   hosts: all
   become: yes
   tasks:
+
+    # =================================================================
+    # STEP 1: BASELINE SCAN (before any hardening)
+    # =================================================================
     - name: Create security reports directory
       file:
         path: /opt/security_reports
         state: directory
+        mode: '0755'
 
     - name: STEP 1 - Run OpenSCAP CIS Baseline Scan
       command: >
-        oscap xccdf eval 
-        --profile xccdf_org.ssgproject.content_profile_cis_level1_server 
-        --results /opt/security_reports/baseline-results.xml 
-        --report /opt/security_reports/docker_cis_baseline.html 
+        oscap xccdf eval
+        --profile xccdf_org.ssgproject.content_profile_cis_level1_server
+        --results /opt/security_reports/baseline-results.xml
+        --report /opt/security_reports/docker_cis_baseline.html
         /opt/scap-security-guide-0.1.79/ssg-ubuntu2204-ds.xml
       ignore_errors: yes
 
     # =================================================================
-    # STEP 2: DOCKER HARDENING (Container-Native Remediation)
+    # STEP 2: HARDENING — All CIS controls applicable to Docker
     # =================================================================
-    - name: STEP 2A - Remove unnecessary network utilities (CIS compliance)
+
+    # -----------------------------------------------------------------
+    # 2A. Package Removal — CIS Section 2
+    # Remove unnecessary/insecure packages
+    # -----------------------------------------------------------------
+    - name: "[CIS 2.x] Remove unnecessary and insecure packages"
       apt:
-        name: 
+        name:
+          - prelink
+          - xinetd
+          - nis
+          - yp-tools
+          - rsh-client
+          - rsh-redone-client
+          - talk
+          - talkd
+          - telnet
+          - ldap-utils
           - wget
           - curl
           - netcat
+          - netcat-openbsd
+          - netcat-traditional
         state: absent
+        purge: yes
+      ignore_errors: yes
 
-    - name: STEP 2B - Create a non-root application user
+    # -----------------------------------------------------------------
+    # 2B. User & Group Setup — CIS Section 5
+    # -----------------------------------------------------------------
+    - name: "[CIS 5.x] Create non-root application user"
       user:
         name: appuser
         state: present
         shell: /bin/bash
-        
-    - name: Gather the package facts
+        create_home: yes
+
+    - name: "[CIS 5.x] Create sugroup for pam_wheel su restriction"
+      group:
+        name: sugroup
+        state: present
+
+    # -----------------------------------------------------------------
+    # 2C. PAM / Password Quality — CIS Section 5.3 & 5.4
+    # -----------------------------------------------------------------
+    - name: "[CIS 5.3] Gather package facts"
       package_facts:
         manager: auto
-      tags:
-      - DISA-STIG-UBTU-22-215010
-      - enable_strategy
-      - low_complexity
-      - low_disruption
-      - medium_severity
-      - no_reboot_needed
-      - package_pam_pwquality_installed
 
-    - name: Ensure libpam-pwquality is installed
+    - name: "[CIS 5.3] Install libpam-pwquality"
       ansible.builtin.package:
         name: libpam-pwquality
         state: present
       when: '"libpam-runtime" in ansible_facts.packages'
-      tags:
-      - DISA-STIG-UBTU-22-215010
-      - enable_strategy
-      - low_complexity
-      - low_disruption
-      - medium_severity
-      - no_reboot_needed
-      - package_pam_pwquality_installed
+
+    - name: "[CIS 5.3] Configure password quality — minlen"
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^# minlen"
+        line: "minlen = 14"
+        create: yes
+
+    - name: "[CIS 5.3] Configure password quality — dcredit"
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^# dcredit"
+        line: "dcredit = -1"
+
+    - name: "[CIS 5.3] Configure password quality — ucredit"
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^# ucredit"
+        line: "ucredit = -1"
+
+    - name: "[CIS 5.3] Configure password quality — lcredit"
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^# lcredit"
+        line: "lcredit = -1"
+
+    - name: "[CIS 5.3] Configure password quality — ocredit"
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^# ocredit"
+        line: "ocredit = -1"
+
+    - name: "[CIS 5.3] Configure password quality — maxrepeat"
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^# maxrepeat"
+        line: "maxrepeat = 3"
+
+    - name: "[CIS 5.3] Configure password quality — dictcheck"
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "^# dictcheck"
+        line: "dictcheck = 1"
+
+    - name: "[CIS 5.4] Set PASS_MAX_DAYS in login.defs"
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "^PASS_MAX_DAYS"
+        line: "PASS_MAX_DAYS   365"
+
+    - name: "[CIS 5.4] Set PASS_MIN_DAYS in login.defs"
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "^PASS_MIN_DAYS"
+        line: "PASS_MIN_DAYS   1"
+
+    - name: "[CIS 5.4] Set PASS_WARN_AGE in login.defs"
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "^PASS_WARN_AGE"
+        line: "PASS_WARN_AGE   7"
+
+    - name: "[CIS 5.4] Set UMASK in login.defs"
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "^UMASK"
+        line: "UMASK           027"
+
+    - name: "[CIS 5.4] Set SHA512 password hashing in login.defs"
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "^ENCRYPT_METHOD"
+        line: "ENCRYPT_METHOD SHA512"
+
+    # -----------------------------------------------------------------
+    # 2D. PAM su restriction — CIS 5.3
+    # Fix: Enforce Usage of pam_wheel with Group Parameter for su
+    # -----------------------------------------------------------------
+    - name: "[CIS 5.3] Configure pam_wheel for su restriction"
+      lineinfile:
+        path: /etc/pam.d/su
+        line: "auth required pam_wheel.so use_uid group=sugroup"
+        insertafter: "^# auth.*pam_wheel"
+        create: yes
+
+    # -----------------------------------------------------------------
+    # 2E. Login Banners — CIS Section 1.7
+    # Fix: Ensure banners are configured properly
+    # -----------------------------------------------------------------
+    - name: "[CIS 1.7] Set /etc/issue local login banner"
+      copy:
+        content: |
+          Authorized use only. All activity may be monitored and reported.
+        dest: /etc/issue
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: "[CIS 1.7] Set /etc/issue.net remote login banner"
+      copy:
+        content: |
+          Authorized use only. All activity may be monitored and reported.
+        dest: /etc/issue.net
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: "[CIS 1.7] Clear /etc/motd"
+      copy:
+        content: ""
+        dest: /etc/motd
+        owner: root
+        group: root
+        mode: '0644'
+
+    # -----------------------------------------------------------------
+    # 2F. File Permissions — CIS Section 6.1
+    # Fix: Verify permissions on critical system files
+    # -----------------------------------------------------------------
+    - name: "[CIS 6.1] Set permissions on /etc/passwd"
+      file:
+        path: /etc/passwd
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: "[CIS 6.1] Set permissions on /etc/passwd-"
+      file:
+        path: /etc/passwd-
+        owner: root
+        group: root
+        mode: '0644'
+      ignore_errors: yes
+
+    - name: "[CIS 6.1] Set permissions on /etc/shadow"
+      file:
+        path: /etc/shadow
+        owner: root
+        group: shadow
+        mode: '0640'
+      ignore_errors: yes
+
+    - name: "[CIS 6.1] Set permissions on /etc/shadow-"
+      file:
+        path: /etc/shadow-
+        owner: root
+        group: shadow
+        mode: '0640'
+      ignore_errors: yes
+
+    - name: "[CIS 6.1] Set permissions on /etc/group"
+      file:
+        path: /etc/group
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: "[CIS 6.1] Set permissions on /etc/group-"
+      file:
+        path: /etc/group-
+        owner: root
+        group: root
+        mode: '0644'
+      ignore_errors: yes
+
+    - name: "[CIS 6.1] Set permissions on /etc/gshadow"
+      file:
+        path: /etc/gshadow
+        owner: root
+        group: shadow
+        mode: '0640'
+      ignore_errors: yes
+
+    - name: "[CIS 6.1] Set permissions on /etc/gshadow-"
+      file:
+        path: /etc/gshadow-
+        owner: root
+        group: shadow
+        mode: '0640'
+      ignore_errors: yes
+
+    - name: "[CIS 6.1] Set permissions on /etc/shells"
+      file:
+        path: /etc/shells
+        owner: root
+        group: root
+        mode: '0644'
+
+    # -----------------------------------------------------------------
+    # 2G. Fix /var/log permissions — CIS Section 4
+    # Fix: Verify permissions of log files (currently failing)
+    # -----------------------------------------------------------------
+    - name: "[CIS 4.x] Fix /var/log directory permissions"
+      shell: |
+        find /var/log -type f -exec chmod g-wx,o-rwx {} \; 2>/dev/null || true
+        find /var/log -type d -exec chmod g-w,o-rx {} \; 2>/dev/null || true
+      ignore_errors: yes
+
+    # -----------------------------------------------------------------
+    # 2H. User home/init file permissions — CIS Section 6.2
+    # Fix: Ensure All User Initialization Files Have Mode 0740
+    # -----------------------------------------------------------------
+    - name: "[CIS 6.2] Fix user initialization file permissions"
+      shell: |
+        for dir in $(awk -F: '($7 !~ /nologin|false/) {print $6}' /etc/passwd); do
+          if [ -d "$dir" ]; then
+            find "$dir" -maxdepth 1 -name ".*" -type f \
+              ! -name ".bash_history" \
+              -exec chmod 0740 {} \; 2>/dev/null || true
+          fi
+        done
+      ignore_errors: yes
+
+    - name: "[CIS 6.2] Fix home directory permissions (mode 0750)"
+      shell: |
+        for dir in $(awk -F: '($7 !~ /nologin|false/ && $6 ~ /^\/home/) {print $6}' /etc/passwd); do
+          if [ -d "$dir" ]; then
+            chmod 0750 "$dir" 2>/dev/null || true
+          fi
+        done
+      ignore_errors: yes
+
+    # -----------------------------------------------------------------
+    # 2I. Core dumps restriction — CIS Section 1.5
+    # -----------------------------------------------------------------
+    - name: "[CIS 1.5] Restrict core dumps in limits.conf"
+      lineinfile:
+        path: /etc/security/limits.conf
+        line: "* hard core 0"
+        create: yes
+
+    - name: "[CIS 1.5] Restrict core dumps in limits.d"
+      copy:
+        content: |
+          * hard core 0
+          * soft core 0
+        dest: /etc/security/limits.d/cis-coredump.conf
+        owner: root
+        group: root
+        mode: '0644'
+
+    # -----------------------------------------------------------------
+    # 2J. Ensure /etc/security/opasswd exists — CIS Section 5
+    # -----------------------------------------------------------------
+    - name: "[CIS 5.x] Ensure /etc/security/opasswd exists"
+      file:
+        path: /etc/security/opasswd
+        owner: root
+        group: root
+        mode: '0600'
+        state: touch
+
+    - name: "[CIS 5.x] Ensure /etc/security/opasswd.old exists"
+      file:
+        path: /etc/security/opasswd.old
+        owner: root
+        group: root
+        mode: '0600'
+        state: touch
+
+    # -----------------------------------------------------------------
+    # 2K. Remove world-writable permissions — CIS Section 6.1
+    # -----------------------------------------------------------------
+    - name: "[CIS 6.1] Remove world-writable permissions from files"
+      shell: |
+        find / -xdev -type f -perm -0002 \
+          ! -path "/proc/*" \
+          ! -path "/sys/*" \
+          ! -path "/dev/*" \
+          -exec chmod o-w {} \; 2>/dev/null || true
+      ignore_errors: yes
+
+    # -----------------------------------------------------------------
+    # 2L. Ensure no ungrouped files — CIS Section 6.1
+    # -----------------------------------------------------------------
+    - name: "[CIS 6.1] Fix ungrouped files — assign to root"
+      shell: |
+        find / -xdev -nogroup \
+          ! -path "/proc/*" \
+          ! -path "/sys/*" \
+          ! -path "/dev/*" \
+          -exec chgrp root {} \; 2>/dev/null || true
+      ignore_errors: yes
+
+    # -----------------------------------------------------------------
+    # 2M. Ensure no unowned files — CIS Section 6.1
+    # -----------------------------------------------------------------
+    - name: "[CIS 6.1] Fix unowned files — assign to root"
+      shell: |
+        find / -xdev -nouser \
+          ! -path "/proc/*" \
+          ! -path "/sys/*" \
+          ! -path "/dev/*" \
+          -exec chown root {} \; 2>/dev/null || true
+      ignore_errors: yes
+
+    # -----------------------------------------------------------------
+    # 2N. Backup file permissions — CIS Section 6.1
+    # -----------------------------------------------------------------
+    - name: "[CIS 6.1] Set permissions on /etc/passwd- backup"
+      file:
+        path: /etc/passwd-
+        owner: root
+        group: root
+        mode: '0644'
+      ignore_errors: yes
+
+    - name: "[CIS 6.1] Set permissions on /etc/group- backup"
+      file:
+        path: /etc/group-
+        owner: root
+        group: root
+        mode: '0644'
+      ignore_errors: yes
 
     # =================================================================
     # STEP 3: POST-HARDENING SCAN
     # =================================================================
     - name: STEP 3 - Run OpenSCAP CIS Post-Hardening Scan
       command: >
-        oscap xccdf eval 
-        --profile xccdf_org.ssgproject.content_profile_cis_level1_server 
-        --results /opt/security_reports/hardened-results.xml 
-        --report /opt/security_reports/docker_cis_hardened.html 
+        oscap xccdf eval
+        --profile xccdf_org.ssgproject.content_profile_cis_level1_server
+        --results /opt/security_reports/hardened-results.xml
+        --report /opt/security_reports/docker_cis_hardened.html
         /opt/scap-security-guide-0.1.79/ssg-ubuntu2204-ds.xml
       ignore_errors: yes
