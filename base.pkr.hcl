@@ -18,15 +18,14 @@ source "vagrant" "ubuntu_base" {
   ssh_password = "vagrant"
   ssh_timeout  = "20m"
 
-  # Tell Packer to use your custom Vagrantfile template
   template = "vagrantfile.tpl"
-
+  teardown_method = "destroy"
 }
 
 build {
   sources = ["source.vagrant.ubuntu_base"]
 
-  # Provisioner: Install all prerequisites. NO hardening happens here.
+  # Install all prerequisites. NO hardening happens here.
   provisioner "shell" {
     inline = [
       "export DEBIAN_FRONTEND=noninteractive",

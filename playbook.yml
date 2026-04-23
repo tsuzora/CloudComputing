@@ -1,9 +1,7 @@
----
-- name: Research Workflow - Automated Hardening and Scanning
+- name: Vagrant VM Security Hardening and Scanning
   hosts: all
   become: yes
   vars:
-    # Point directly to the downloaded guide
     scap_profile: "/opt/scap-security-guide-0.1.79/ssg-ubuntu2204-ds.xml"
     report_dir: "/opt/security_reports"
 
@@ -18,15 +16,14 @@
         mode: '0755'
 
     # ==========================================
-    # STEP 1: BASELINE SCAN (From Flowchart)
+    # STEP 1: BASELINE SCAN
     # ==========================================
     - name: STEP 1 - Run OpenSCAP Baseline Scan
       command: >
-        oscap xccdf eval 
-        --profile xccdf_org.ssgproject.content_profile_standard 
-        --report {{ report_dir }}/baseline_report.html 
+        oscap xccdf eval
+        --profile xccdf_org.ssgproject.content_profile_standard
+        --report {{ report_dir }}/baseline_report.html
         {{ scap_profile }}
-      # We ignore failures here because the baseline WILL fail the security checks
       failed_when: false
       register: baseline_scan
 
@@ -35,104 +32,275 @@
         msg: "Baseline scan complete. Report saved to {{ report_dir }}/baseline_report.html"
 
     # ==========================================
-    # STEP 2: ANSIBLE HARDENING (From Flowchart)
+    # STEP 2: HARDENING (VM-Focused)
     # ==========================================
-    - name: STEP 2A - Lock down permissions on /etc/shadow (Universal)
+
+    # --- File Permissions ---
+    - name: STEP 2A - Lock down permissions on /etc/shadow
       file:
         path: /etc/shadow
         owner: root
-        group: root
-        mode: '0000'
+        group: shadow
+        mode: '0640'
 
-    - name: STEP 2B - Ensure password complexity package is installed (Universal)
+    - name: STEP 2B - Lock down permissions on /etc/passwd
+      file:
+        path: /etc/passwd
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: STEP 2C - Lock down permissions on /etc/gshadow
+      file:
+        path: /etc/gshadow
+        owner: root
+        group: shadow
+        mode: '0640'
+
+    # --- Password Policy ---
+    - name: STEP 2D - Ensure password complexity package is installed
       apt:
         name: libpam-pwquality
         state: present
 
-    - name: STEP 2C - Create non-root application user (Docker Only)
-      user:
-        name: secureapp
-        state: present
-        shell: /bin/bash
-      when: ansible_virtualization_type == 'docker' or ansible_virtualization_type == 'containerd'
+    - name: STEP 2E - Configure password complexity requirements
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        create: yes
+      loop:
+        - { regexp: '^minlen', line: 'minlen = 14' }
+        - { regexp: '^dcredit', line: 'dcredit = -1' }
+        - { regexp: '^ucredit', line: 'ucredit = -1' }
+        - { regexp: '^ocredit', line: 'ocredit = -1' }
+        - { regexp: '^lcredit', line: 'lcredit = -1' }
+        - { regexp: '^maxrepeat', line: 'maxrepeat = 3' }
+        - { regexp: '^minclass', line: 'minclass = 4' }
 
-    - name: STEP 2D - Restrict sudoers to require password (VM Only)
+    - name: STEP 2F - Set password aging policy (max 90 days)
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^PASS_MAX_DAYS', line: 'PASS_MAX_DAYS   90' }
+        - { regexp: '^PASS_MIN_DAYS', line: 'PASS_MIN_DAYS   7' }
+        - { regexp: '^PASS_WARN_AGE', line: 'PASS_WARN_AGE   14' }
+
+    # --- SSH Hardening ---
+    - name: STEP 2G - Disable SSH root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+
+    - name: STEP 2H - Disable SSH password authentication (key-based only)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      # Note: Vagrant needs password auth. This is commented out to avoid
+      # locking out the vagrant user during Packer provisioning.
+      # Uncomment for production hardening after box is built.
+      when: false
+
+    - name: STEP 2I - Set SSH idle timeout (5 minutes)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval 300' }
+        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 0' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 4' }
+        - { regexp: '^#?Protocol', line: 'Protocol 2' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+        - { regexp: '^#?IgnoreRhosts', line: 'IgnoreRhosts yes' }
+        - { regexp: '^#?HostbasedAuthentication', line: 'HostbasedAuthentication no' }
+        - { regexp: '^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+        - { regexp: '^#?Banner', line: 'Banner /etc/issue.net' }
+
+    - name: STEP 2J - Set SSH login banner
+      copy:
+        dest: /etc/issue.net
+        content: |
+          ############################################################
+          # AUTHORIZED ACCESS ONLY                                    #
+          # Unauthorized access is prohibited and will be prosecuted. #
+          ############################################################
+        mode: '0644'
+
+    # --- Sudo Hardening ---
+    - name: STEP 2K - Restrict sudoers to require password
       lineinfile:
         path: /etc/sudoers
         state: absent
         regexp: '^%sudo.*NOPASSWD:.*'
-      when: ansible_virtualization_type == 'virtualbox'
+        validate: 'visudo -cf %s'
 
-    - name: STEP 2E - Disable SSH root login (VM Only)
+    - name: STEP 2L - Set sudo log file
       lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^PermitRootLogin'
-        line: 'PermitRootLogin no'
-      when: ansible_virtualization_type == 'virtualbox'
+        path: /etc/sudoers
+        line: 'Defaults logfile="/var/log/sudo.log"'
+        insertafter: '^Defaults'
+        validate: 'visudo -cf %s'
 
+    # --- Firewall ---
+    - name: STEP 2M - Install UFW firewall
+      apt:
+        name: ufw
+        state: present
+
+    - name: STEP 2N - Set UFW default deny incoming
+      ufw:
+        default: deny
+        direction: incoming
+
+    - name: STEP 2O - Set UFW default allow outgoing
+      ufw:
+        default: allow
+        direction: outgoing
+
+    - name: STEP 2P - Allow SSH through firewall (port 22)
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: STEP 2Q - Enable UFW
+      ufw:
+        state: enabled
+
+    # --- Auditd (Audit Logging) ---
+    - name: STEP 2R - Install auditd
+      apt:
+        name:
+          - auditd
+          - audispd-plugins
+        state: present
+
+    - name: STEP 2S - Enable and start auditd service
+      systemd:
+        name: auditd
+        enabled: yes
+        state: started
+
+    - name: STEP 2T - Configure audit rules for critical files
+      copy:
+        dest: /etc/audit/rules.d/hardening.rules
+        content: |
+          # Monitor authentication files
+          -w /etc/passwd -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/group -p wa -k identity
+          -w /etc/gshadow -p wa -k identity
+          # Monitor sudoers
+          -w /etc/sudoers -p wa -k sudoers
+          -w /etc/sudoers.d/ -p wa -k sudoers
+          # Monitor SSH config
+          -w /etc/ssh/sshd_config -p wa -k sshd
+          # Monitor login/logout events
+          -w /var/log/lastlog -p wa -k logins
+          -w /var/run/faillock/ -p wa -k logins
+          # Monitor privilege escalation
+          -a always,exit -F arch=b64 -S setuid -S setgid -k privilege_escalation
+          -a always,exit -F arch=b32 -S setuid -S setgid -k privilege_escalation
+        mode: '0640'
+
+    - name: STEP 2U - Reload audit rules
+      command: augenrules --load
+      failed_when: false
+
+    # --- Kernel / Sysctl Hardening ---
+    - name: STEP 2V - Apply sysctl hardening settings
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+        sysctl_file: /etc/sysctl.d/99-hardening.conf
+      loop:
+        # Disable IP forwarding
+        - { name: 'net.ipv4.ip_forward', value: '0' }
+        # Disable ICMP redirects
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv6.conf.all.accept_redirects', value: '0' }
+        # Disable source routing
+        - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+        # Enable SYN flood protection
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+        # Log martian packets
+        - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
+        # Disable IPv6 if not needed
+        - { name: 'net.ipv6.conf.all.disable_ipv6', value: '1' }
+        - { name: 'net.ipv6.conf.default.disable_ipv6', value: '1' }
+        # Restrict core dumps
+        - { name: 'fs.suid_dumpable', value: '0' }
+        # Randomize VA space (ASLR)
+        - { name: 'kernel.randomize_va_space', value: '2' }
+
+    # --- Disable Unused Services ---
+    - name: STEP 2W - Disable unnecessary services
+      systemd:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped
+      loop:
+        - avahi-daemon
+        - cups
+        - isc-dhcp-server
+        - isc-dhcp-server6
+        - slapd
+        - nfs-server
+        - rpcbind
+        - bind9
+        - vsftpd
+        - dovecot
+        - smbd
+        - snmpd
+        - squid
+        - nis
+      failed_when: false
+
+    # --- Time Sync ---
     - name: Gather the package facts
       package_facts:
-      manager: auto
-      tags:
-      - NIST-800-53-AU-8(1)(a)
-      - NIST-800-53-CM-6(a)
-      - PCI-DSS-Req-10.4
-      - PCI-DSSv4-10.6
-      - PCI-DSSv4-10.6.1
-      - enable_strategy
-      - high_severity
-      - low_complexity
-      - low_disruption
-      - no_reboot_needed
-      - service_timesyncd_enabled
-      
-    - name: XCCDF Value var_timesync_service # promote to variable
+        manager: auto
+
+    - name: XCCDF Value var_timesync_service
       set_fact:
         var_timesync_service: !!str systemd-timesyncd
-      tags:
-        - always
-    
+
     - name: Enable service systemd-timesyncd
       block:
-    
-      - name: Gather the package facts
-        ansible.builtin.package_facts:
-          manager: auto
-    
-      - name: Enable service systemd-timesyncd
-        ansible.builtin.systemd:
-          name: systemd-timesyncd
-          enabled: 'yes'
-          state: started
-          masked: 'no'
-        when:
-        - '"systemd-timesyncd" in ansible_facts.packages'
-        - var_timesync_service == "systemd-timesyncd"
-        - var_timesync_service == "systemd-timesyncd"
+        - name: Gather the package facts
+          ansible.builtin.package_facts:
+            manager: auto
+
+        - name: Enable service systemd-timesyncd
+          ansible.builtin.systemd:
+            name: systemd-timesyncd
+            enabled: 'yes'
+            state: started
+            masked: 'no'
+          when:
+            - '"systemd-timesyncd" in ansible_facts.packages'
+            - var_timesync_service == "systemd-timesyncd"
       when:
-      - '"linux-base" in ansible_facts.packages'
-      - ( not ( "chrony" in ansible_facts.packages ) and not ( "ntp" in ansible_facts.packages
-        ) )
-      tags:
-      - NIST-800-53-AU-8(1)(a)
-      - NIST-800-53-CM-6(a)
-      - PCI-DSS-Req-10.4
-      - PCI-DSSv4-10.6
-      - PCI-DSSv4-10.6.1
-      - enable_strategy
-      - high_severity
-      - low_complexity
-      - low_disruption
-      - no_reboot_needed
-      - service_timesyncd_enabled
+        - '"linux-base" in ansible_facts.packages'
+        - ( not ( "chrony" in ansible_facts.packages ) and not ( "ntp" in ansible_facts.packages ) )
+
     # ==========================================
-    # STEP 3: POST-HARDENING SCAN (From Flowchart)
+    # STEP 3: POST-HARDENING SCAN
     # ==========================================
     - name: STEP 3 - Run OpenSCAP Post-Hardening Scan
       command: >
-        oscap xccdf eval 
-        --profile xccdf_org.ssgproject.content_profile_standard 
-        --report {{ report_dir }}/post_hardening_report.html 
+        oscap xccdf eval
+        --profile xccdf_org.ssgproject.content_profile_standard
+        --report {{ report_dir }}/post_hardening_report.html
         {{ scap_profile }}
       failed_when: false
       register: post_scan
